@@ -1,0 +1,280 @@
+---
+title: "deep_seq_analysis"
+output: 
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(tidyverse)
+library(RColorBrewer)
+library(plotly)
+library(htmlwidgets)
+```
+
+Set working directory to location of pileup files counting allele frequency data:
+```{r}
+setwd("/Users/seanmeaden/Dropbox/CRISPR Postdoc/Other_projects/Mariann_Tipping_Points/Data/sequence_data/pileups/")
+list.files(path=".")
+```
+
+Put all together in a list
+```{r}
+# Make empty list
+allcnts.list <- list()
+
+# Pileup files for each sample
+files <- list.files(path=".", pattern="*bam_pileup", recursive=FALSE)
+files
+# Read all into list
+for (i in 1:length(files))
+{
+allcnts.list[[i]]<-read.table(files[i] ,sep="\t",col.names=c("chr","pos","ref","depth","refcnt","altcnt","ncnt","indelcnt"))
+print(files[i])
+}
+# Name same as samples
+names(allcnts.list)<-files
+
+#Check
+names(allcnts.list)
+allcnts.list[1]
+```
+
+Convert to df to plot:
+```{r}
+all <- do.call("rbind", allcnts.list)
+all$id <- rep(names(allcnts.list), sapply(allcnts.list, nrow))
+
+#Tidy up names
+all$id<-gsub("\\_\\.bam_pileup_out.txt", "", all$id)
+all$id<-paste("sample", all$id, sep ="_")
+row.names(all)<-rep(1:nrow(all))
+head(all)
+```
+
+Get target sequences from each BIM and use in plot (from the mapped spacer reads):
+```{r}
+targs<-read.table("../target_seqs1.bed")
+colnames(targs)<-c("spacer", "start", "stop")
+head(targs)
+# Add in PAM sequence at 5' end:
+targs$stop<-targs$stop + 2
+```
+
+Sample information:
+sample 1: lab DMS3vir
+      2:   lab DMS3virAcrF1
+      3:  lab DMS3virAcrF4
+      4:  lab DMS3vir evolved on WT
+      5:  lab DMS3virAcrF1 evolved on WT
+      6:    lab DMS3virAcrF4 evolved on WT
+      7:    lab DMS3virAcrF1 evolved on BIM2
+      8:    lab DMS3virAcrF4 evolved on BIM2
+      9:    lab DMS3virAcrF1 evolved on BIM5
+      10:   lab DMS3virAcrF4 evolved on BIM5
+```{r}
+
+all <- all %>%
+  mutate(strain = case_when(id == "sample_1" ~ "DMS3vir",
+                            id == "sample_2" ~ "AcrF1",
+                            id == "sample_3" ~ "AcrF4",
+                            id == "sample_4" ~ "DMS3vir",
+                            id == "sample_5" ~ "AcrF1",
+                            id == "sample_6" ~ "AcrF4",
+                            id == "sample_7" ~ "AcrF1",
+                            id == "sample_8" ~ "AcrF4",
+                            id == "sample_9" ~ "AcrF1",
+                            id == "sample_10" ~ "AcrF4"), 
+         treatment = case_when(id == "sample_1" ~ "ANC",
+                            id == "sample_2" ~ "ANC",
+                            id == "sample_3" ~ "ANC",
+                            id == "sample_4" ~ "WT",
+                            id == "sample_5" ~ "WT",
+                            id == "sample_6" ~ "WT",
+                            id == "sample_7" ~ "BIM2",
+                            id == "sample_8" ~ "BIM2",
+                            id == "sample_9" ~ "BIM5",
+                            id == "sample_10" ~ "BIM5")) 
+head(all)
+```
+
+#Coverage plot:
+```{r}
+all %>%
+  ggplot(., aes(pos, depth))+
+  geom_line( aes(group = id, color = strain), alpha = 0.4)+
+  scale_color_brewer(type = "qual", palette = 6)+
+  xlab(" Genome Positon (log10)")+
+  ylab(" Coverage")+
+  theme_classic()+
+  theme(text = element_text(size = 20))
+
+# Sanity check: Zoom in and label c-repressor that was removed (to make Vir)
+all %>%
+  filter(pos > 200 & pos < 2000) %>%
+  ggplot(., aes(pos, depth))+
+  geom_line( aes(group = id, color = strain), alpha = 0.4)+
+  scale_color_brewer(type = "qual", palette = 6)+
+  xlab(" Genome Positon (log10)")+
+  ylab(" Coverage")+
+  theme_classic()+
+  theme(text = element_text(size = 20))+
+  geom_vline(xintercept = c(500, 700), color = "black", linetype = "dashed")
+```
+ Looks pretty close to prediction. Maybe c-repressor truncation bigger than we though? 
+
+ Zoom in and label Acr region recombined region (i.e. from JBD phages)
+```{r}
+all %>%
+  filter(pos > 16000 & pos < 25000) %>%
+  ggplot(., aes(pos, depth))+
+  geom_line( aes(group = id, color = strain), alpha = 0.4)+
+  scale_color_brewer(type = "qual", palette = 6)+
+  xlab(" Genome Positon (log10)")+
+  ylab(" Coverage")+
+  theme_classic()+
+  theme(text = element_text(size = 20))+
+    geom_vline(xintercept = c(17700, 19357), color = "black", linetype = "dashed")
+# Looks sensible?
+```
+
+Get ratio of ref/alt. Distinguish between high/low freq SNPs.
+Need to define a biologically relevant threshold here vs. noise from sequencing / basecall
+```{r}
+# Hard filter sites with coverage low reads.
+head(all)
+#all<-subset(all, depth > 1000)
+
+# Get SNP frequency
+
+all$freq <- (all$depth - all$refcnt)/all$depth
+
+head(all)
+hist(all$freq, breaks = 100)
+```
+
+# Plot raw w/ no cutoffs:
+
+```{r}
+snps<-all
+head(snps)
+```
+
+
+# Zoom in on protospacers:
+Focus on PAM and seed region only
+```{r}
+targs
+
+snps <- snps %>%
+  mutate(spacer = case_when(
+      pos >= 27872 & pos <= 27882 ~ "spacer1",
+      pos >= 28031 & pos <= 28041 ~ "spacer2",
+      pos >= 30696 & pos <= 30706 ~ "spacer3",
+      pos >= 29990 & pos <= 30000 ~ "spacer4",
+      pos >= 35792 & pos <= 35802 ~ "spacer5",
+      TRUE ~ "other"
+      )) #%>%
+  #group_by(spacer) %>% summarise(my_cnt1 = n())
+  #ggplot(., aes(pos, ratio))+
+  #geom_point(aes(color = "spacer"))
+head(snps)
+```
+
+
+# Find max SNP freq per spacer:
+```{r}
+spacer1<-subset(snps, spacer == "spacer1")
+head(spacer1)
+spacer1
+
+spacers<-c("spacer1", "spacer2", "spacer3", "spacer4", "spacer5")
+
+snps %>%
+  group_by(spacer, strain, treatment) %>%
+  filter(spacer %in% spacers) %>%
+  # Just check WT first:
+  summarise(max = max(freq)) %>%
+  ggplot(., aes(treatment, max))+
+  geom_boxplot(aes(color = strain))+
+  scale_y_log10()+
+  theme_classic()+
+  xlab("Treatment")+
+  ylab("Max SNP Frequency")+
+  theme(text = element_text(size = 20))+
+  facet_wrap(~ spacer)
+```
+
+# A couple of high freq SNPs in DMS3 on WT
+```{r}
+head(snps)
+
+snps %>%
+  filter(., spacer %in% spacers) %>%
+  ggplot(., aes(pos, freq))+
+  geom_jitter( aes(color = paste(strain, treatment, sep = "_")))+
+  facet_wrap(~ spacer, ncol = 1, scales = "free_x")+
+  theme_bw()
+```
+Note y scale. All SNPs really low freq apart from spacer 1. Zoom in on spacer 1:
+```{r}
+snps$sample<-paste(snps$strain, snps$treatment, sep = "_")
+p <- snps %>%
+  filter(., spacer == "spacer1") %>%
+  ggplot(., aes(pos, freq))+
+  geom_point( aes(color = sample), width = 2)+
+  theme_bw()+
+  xlab("Position")+
+  ylab("Variant Frequency")+
+  theme(text = element_text(size = 20))+
+  labs(color = "Sample")
+p
+
+P<-ggplotly(p, width = 1500, tooltip = c('sample', 'pos', 'freq'))
+P
+```
+
+# SNP frequency across all target sites:
+```{r}
+snps %>%
+  filter(., spacer %in% spacers) %>%
+  group_by(., spacer, treatment, strain) %>%
+  summarise(mean_freq = mean(freq), sd = sd(freq), se = sd(freq) / sqrt(length(freq))) %>%
+  ggplot(., aes(treatment, mean_freq, fill = strain))+
+  geom_bar(stat = "identity", position = "dodge")+
+  #geom_pointrange(aes(ymin = mean_freq - se, ymax = mean_freq + se, color = strain))+
+  theme_classic()+
+  scale_fill_brewer(type = "qual", palette = 6)+
+  geom_errorbar( aes(ymin = mean_freq - se, ymax = mean_freq + se), , position = "dodge", alpha = 0.7, size = 0.5)+
+  xlab("Treatment")+
+  ylab("Mean SNP Frequency across\ntarget sites")+
+  theme(text = element_text(size = 20))+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  facet_wrap(~ spacer)+
+  labs(fill = "Strain")
+```
+
+# Show w/ pointrange / boxplot:
+```{r}
+snps
+snps %>%
+  filter(., spacer %in% spacers) %>%
+  group_by(., spacer, treatment, strain) %>%
+  summarise(mean_freq = mean(freq), sd = sd(freq), se = sd(freq) / sqrt(length(freq))) %>%
+  ggplot(., aes(treatment, mean_freq))+
+  #geom_pointrange( aes(y = mean_freq, ymin = mean_freq - se, ymax = mean_freq + se, color = strain), position = position_dodge(width = 1), fill = "white", shape = 22)+
+  geom_pointrange( aes(y = mean_freq, ymin = mean_freq - se, ymax = mean_freq + se, color = strain), position = position_dodge(width = 1))+
+  theme_classic()+
+  scale_color_brewer(type = "qual", palette = 6)+
+  xlab("Treatment")+
+  ylab("Mean SNP Frequency across\ntarget sites")+
+  theme(text = element_text(size = 20))+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  facet_wrap(~ spacer)+
+  labs(color = "Strain")
+```
